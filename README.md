@@ -17,7 +17,7 @@ Folder Reorganiser is a native macOS application built with SwiftUI designed to 
 
 ## Installation
 
-1.  Download the latest release from the [Releases] page.
+1.  Download the latest release from the [Releases](https://github.com/DD00031/folder-reorganiser/releases) page.
 2.  Unzip the file.
 3.  Drag `Folder Reorganiser.app` to your Applications folder.
 
@@ -36,5 +36,4 @@ Folder Reorganiser is a native macOS application built with SwiftUI designed to 
 4.  **Execute**: Click "Execute Changes" to apply the moves to your actual file system.
 
 ## License
-
-MIT
+folder-reorganiser is available under the GPL-3.0 license.
