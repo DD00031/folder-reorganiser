@@ -41,4 +41,4 @@ Folder Reorganiser is a native macOS application built with SwiftUI designed to 
 
 ## License
 
-MIT
+folder-reorganiser is available under the GPL-3.0 license.
