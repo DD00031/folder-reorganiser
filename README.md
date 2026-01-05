@@ -31,6 +31,16 @@ Folder Reorganiser is a native macOS application built with SwiftUI designed to 
 2.  Unzip the file.
 3.  Drag `Folder Reorganiser.app` to your Applications folder.
 
+> [!IMPORTANT]
+>
+> Apple will flag this app as it is not signed by an registered developer, this doesn't mean the app is not safe. To use the app follow the steps below
+> 1. Click **OK** to close the popup.
+> 2. Open **System Settings** > **Privacy & Security**.
+> 3. Scroll down and click **Open Anyway**.
+> 4. Confirm your choice when prompted.
+>
+> You only need to do this once.
+
 ## Usage
 
 1.  **Open**: Select the root folder you wish to manage.
