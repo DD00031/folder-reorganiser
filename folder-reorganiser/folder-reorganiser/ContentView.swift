@@ -243,17 +243,12 @@ class OrganizerViewModel: ObservableObject {
         recalculateStagedChanges()
     }
     
-    // MARK: - Smart Regex Generation (FIXED)
+    // MARK: - Smart Regex Generation
     
     private func smartWildcardRegex(from text: String, caseSensitive: Bool) -> NSRegularExpression? {
         var pattern = NSRegularExpression.escapedPattern(for: text)
-        
-        // FIX: Replace literal spaces and newlines (not escaped ones)
-        // because escapedPattern does not escape spaces/newlines.
         pattern = pattern.replacingOccurrences(of: " ", with: "[\\s\\r\\n]*")
         pattern = pattern.replacingOccurrences(of: "\n", with: "[\\s\\r\\n]*")
-        
-        // Replace escaped wildcard with non-greedy match
         pattern = pattern.replacingOccurrences(of: "\\*", with: "(.*?)")
         
         let options: NSRegularExpression.Options = caseSensitive ? [] : [.caseInsensitive, .dotMatchesLineSeparators]
@@ -392,7 +387,7 @@ class OrganizerViewModel: ObservableObject {
         }
     }
     
-    // MARK: - File Ops
+    // MARK: - File Ops (Undo/Redo)
     
     func createVirtualFolder(name: String, parentID: UUID?, undoManager: UndoManager?) {
         guard let root = rootURL else { return }
@@ -457,17 +452,27 @@ class OrganizerViewModel: ObservableObject {
         createVirtualFolder(name: name, parentID: targetParentID, undoManager: undoManager)
     }
     
+    // MARK: - EXECUTION (UPDATED with References Fix)
+    
     func execute() {
         guard let root = rootURL else { return }
         isProcessing = true
         statusMessage = "Executing..."
         let fileManager = FileManager.default
         let changesToProcess = self.stagedChanges
+        
         DispatchQueue.global(qos: .userInitiated).async {
             var errorCount = 0
+            
+            // 0. Build global file map (Original -> New) BEFORE moving anything
+            // This ensures we know where every file ends up to resolve references later
+            let allFilesMap = self.buildGlobalFileMap(nodes: self.fileTree)
+            
+            // 1. Create Directories
             let parentFolders = Set(changesToProcess.map { $0.destinationURL.deletingLastPathComponent() })
             for folder in parentFolders { try? fileManager.createDirectory(at: folder, withIntermediateDirectories: true, attributes: nil) }
             
+            // 2. Move Files & Apply Manual Edits
             for node in changesToProcess {
                 do {
                     if node.isMoved {
@@ -484,6 +489,21 @@ class OrganizerViewModel: ObservableObject {
                     }
                 } catch { errorCount += 1 }
             }
+            
+            // 3. Update HTML References (Restored Feature)
+            // We iterate through the map to find text files and update their content based on new locations
+            let textExtensions = ["html", "htm", "css", "js", "php"]
+            
+            for (_, newURL) in allFilesMap {
+                if textExtensions.contains(newURL.pathExtension.lowercased()) {
+                    do {
+                        try self.updateReferences(in: newURL, allFilesMap: allFilesMap)
+                    } catch {
+                        print("Error updating refs in \(newURL.lastPathComponent): \(error)")
+                    }
+                }
+            }
+            
             DispatchQueue.main.async {
                 self.isProcessing = false
                 if errorCount == 0 { self.statusMessage = "Changes executed"; self.addedRules.removeAll(); self.pendingContentEdits.removeAll(); self.refreshTree() }
@@ -492,9 +512,71 @@ class OrganizerViewModel: ObservableObject {
         }
     }
     
+    // Logic to update references (Copied and adapted from early version)
+    private func updateReferences(in fileURL: URL, allFilesMap: [URL: URL]) throws {
+        guard FileManager.default.fileExists(atPath: fileURL.path) else { return }
+        
+        var content = try String(contentsOf: fileURL, encoding: .utf8)
+        let pattern = #"(src|href|url)=["']?([^"'>\s]+)["']?"#
+        let regex = try NSRegularExpression(pattern: pattern, options: .caseInsensitive)
+        let matches = regex.matches(in: content, options: [], range: NSRange(content.startIndex..., in: content))
+        var changed = false
+        
+        for match in matches.reversed() {
+            if let pathRange = Range(match.range(at: 2), in: content) {
+                let foundPath = String(content[pathRange])
+                if foundPath.contains("http") || foundPath.hasPrefix("#") || foundPath.hasPrefix("mailto:") { continue }
+                
+                // Find original location of THIS file (fileURL) to resolve relative paths
+                // We look for key where value == fileURL
+                guard let originalFileLocation = allFilesMap.first(where: { $0.value == fileURL })?.key else { continue }
+                
+                let originalDir = originalFileLocation.deletingLastPathComponent()
+                let targetAbsOriginal = originalDir.appendingPathComponent(foundPath).standardizedFileURL
+                
+                // Check if the target exists in our map (meaning it's a file in our project)
+                // We check if we have a known destination for this target
+                if let targetNewLocation = allFilesMap[targetAbsOriginal] {
+                    let newDir = fileURL.deletingLastPathComponent()
+                    let newRelPath = calculateRelPath(from: newDir, to: targetNewLocation)
+                    
+                    if foundPath != newRelPath {
+                        content.replaceSubrange(pathRange, with: newRelPath)
+                        changed = true
+                    }
+                }
+            }
+        }
+        
+        if changed { try content.write(to: fileURL, atomically: true, encoding: .utf8) }
+    }
+    
+    private func calculateRelPath(from base: URL, to target: URL) -> String {
+        let basePath = base.path.split(separator: "/")
+        let targetPath = target.path.split(separator: "/")
+        var common = 0
+        while common < basePath.count && common < targetPath.count && basePath[common] == targetPath[common] { common += 1 }
+        let up = Array(repeating: "..", count: basePath.count - common)
+        let down = targetPath[common...].map { String($0) }
+        return (up + down).joined(separator: "/")
+    }
+    
     func revertChanges() { refreshTree(); addedRules.removeAll(); pendingContentEdits.removeAll() }
     
     // MARK: - Helpers (Condensed)
+    
+    private func buildGlobalFileMap(nodes: [FileNode]) -> [URL: URL] {
+        var map: [URL: URL] = [:]
+        for node in nodes {
+            map[node.url] = node.destinationURL
+            if let children = node.children {
+                let childMap = buildGlobalFileMap(nodes: children)
+                map.merge(childMap) { (_, new) in new }
+            }
+        }
+        return map
+    }
+    
     private func collectNodesForEditor(scope: EditorScope, selectedIDs: Set<UUID>, nodes: [FileNode]) -> [FileNode] {
         var results: [FileNode] = []
         for node in nodes {
@@ -760,7 +842,7 @@ struct ContentView: View {
                                     Image(systemName: "arrow.right").foregroundColor(.gray)
                                     HStack(spacing: 0) {
                                         TextField("Folder (e.g. Assets)", text: $viewModel.newRuleFolder).textFieldStyle(RoundedBorderTextFieldStyle()).onSubmit { viewModel.addRule(undoManager: undoManager) }
-                                        Menu { ForEach(viewModel.availableFolders, id: \.self) { folderName in Button(folderName) { viewModel.newRuleFolder = folderName } } } label: {}.menuStyle(.borderlessButton).frame(width: 20)
+                                        Menu { ForEach(viewModel.availableFolders, id: \.self) { folderName in Button(folderName) { viewModel.newRuleFolder = folderName } } } label: { Image(systemName: "chevron.down").font(.caption).foregroundColor(.secondary).padding(.leading, 4) }.menuStyle(.borderlessButton).frame(width: 20)
                                     }
                                 }
                                 Button("Add Rule") { viewModel.addRule(undoManager: undoManager) }.controlSize(.small)
